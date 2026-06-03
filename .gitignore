@@ -1,5 +1,5 @@
-__pycache__/
-*.pyc
 node_modules/
 .env
+docs.json
 docs/
+.vscode/

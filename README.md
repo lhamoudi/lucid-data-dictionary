@@ -92,12 +92,10 @@ node scripts/gen_data_dictionary.js <doc-id> --out-dir /path/to/output
 
 ## docs.json
 
-Add entries for each document you want to track:
+`docs.json` is gitignored — copy the example and fill in your document IDs:
 
-```json
-[
-  { "id": "<lucid-doc-uuid>", "title": "Human-readable name" }
-]
+```bash
+cp docs.json.example docs.json
 ```
 
 The `--all` flag reads this file from the current working directory.
