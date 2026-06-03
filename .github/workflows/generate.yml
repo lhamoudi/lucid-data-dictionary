@@ -1,0 +1,38 @@
+name: Generate Data Dictionary
+
+on:
+  workflow_dispatch:
+    inputs:
+      doc-id:
+        description: 'Lucid document UUID, or "all" to process every doc in docs.json'
+        required: true
+        default: 'all'
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Generate dictionary
+        env:
+          LUCID_API_KEY: ${{ secrets.LUCID_API_KEY }}
+        run: |
+          if [ "${{ inputs.doc-id }}" = "all" ]; then
+            python scripts/gen_data_dictionary.py --all --out-dir docs
+          else
+            python scripts/gen_data_dictionary.py "${{ inputs.doc-id }}" --out-dir docs
+          fi
+
+      - name: Upload as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: data-dictionary
+          path: docs/
