@@ -29,7 +29,7 @@ The extractor fetches a document live from the Lucid API, then scans every shape
   workflows/
     generate.yml          # Manual workflow — accepts a doc ID or "all"
 scripts/
-  gen_data_dictionary.py
+  gen_data_dictionary.js
 docs.json                 # List of documents to process with --all
 docs/                     # Generated output (gitignored — download from Actions artifacts)
 ```
@@ -56,19 +56,38 @@ Configure in **Settings → Secrets and variables → Actions**:
 ## Local usage
 
 ```bash
-export LUCID_API_KEY=your-api-key
+# Install dependencies
+npm install
+
+# Add your API key to a local .env file
+echo "LUCID_API_KEY=your-api-key" > .env
+
+# Show CLI help
+npm run generate -- --help
 
 # Single doc by UUID
-python scripts/gen_data_dictionary.py <doc-id>
+npm run generate -- <doc-id>
+
+# Single doc by UUID (direct node command)
+node scripts/gen_data_dictionary.js <doc-id>
 
 # All docs in docs.json
-python scripts/gen_data_dictionary.py --all
+npm run generate -- --all
+
+# All docs in docs.json (direct node command)
+node scripts/gen_data_dictionary.js --all
 
 # Read from a local file instead of calling the API
-python scripts/gen_data_dictionary.py <doc-id> --file /path/to/document.json
+npm run generate -- <doc-id> --file /path/to/document.json
+
+# Read from a local file instead of calling the API (direct node command)
+node scripts/gen_data_dictionary.js <doc-id> --file /path/to/document.json
 
 # Custom output directory
-python scripts/gen_data_dictionary.py <doc-id> --out-dir /path/to/output
+npm run generate -- <doc-id> --out-dir /path/to/output
+
+# Custom output directory (direct node command)
+node scripts/gen_data_dictionary.js <doc-id> --out-dir /path/to/output
 ```
 
 ## docs.json
