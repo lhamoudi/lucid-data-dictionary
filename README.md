@@ -2,7 +2,7 @@
 
 > **This is a template repository.** To use it, create a new private repo from this template (or fork/clone it), add your own `docs.json` (copy from `docs.json.example`), and configure the `LUCID_API_KEY` secret.
 
-Generates a contact-attribute data dictionary from Lucidchart IVR flow diagrams. For each tracked document, it produces a Markdown table and a CSV listing every contact attribute being set across all pages, where it's set, and sample assignment expressions.
+Generates a contact-attribute data dictionary from Lucidchart IVR flow diagrams. For each tracked document, it produces a Markdown table and a CSV listing every contact attribute being set across all pages. Optionally enriches each attribute with a plain-English description and category (business / module-io / transient) using the Claude API.
 
 ## How it works
 
@@ -17,12 +17,25 @@ The extractor fetches a document live from the Lucid API, then scans every shape
 
 ### Output per attribute
 
+Without `--enrich`:
+
 | Field | Description |
 |---|---|
 | `attribute` | Attribute name with `$` prefix |
 | `document` | Source Lucid document title |
 | `pages` | All pages where the attribute is set |
 | `sample_assignment_1–3` | Up to three representative assignment expressions from the diagram |
+
+With `--enrich` (Claude API):
+
+| Field | Description |
+|---|---|
+| `attribute` | Attribute name with `$` prefix |
+| `document` | Source Lucid document title |
+| `category` | `business` / `module-io` / `transient` |
+| `description` | Plain-English description of what the attribute represents |
+| `note` | Data quality flag (e.g. possible typo, naming inconsistency) — blank if none |
+| `pages` | All pages where the attribute is set |
 
 ## Repo structure
 
@@ -47,13 +60,21 @@ Trigger **Generate Data Dictionary** from the Actions tab. Provide a `doc-id` in
 
 The outputs are uploaded as a downloadable artifact named `data-dictionary`.
 
-### Required secret
+### Workflow inputs
+
+| Input | Description |
+|---|---|
+| `doc-id` | Lucid document UUID, or `all` to process every doc in `docs.json` |
+| `enrich` | Boolean — enable Claude-powered descriptions (default: false) |
+
+### Required secrets
 
 Configure in **Settings → Secrets and variables → Actions**:
 
-| Name | Type | Description |
+| Name | Required | Description |
 |---|---|---|
-| `LUCID_API_KEY` | Secret | Lucid REST API key (Team/Enterprise plan required) |
+| `LUCID_API_KEY` | Always | Lucid REST API key (Team/Enterprise plan required) |
+| `ANTHROPIC_API_KEY` | Only with `enrich` | Anthropic API key for Claude enrichment |
 
 ## Local usage
 
@@ -61,8 +82,9 @@ Configure in **Settings → Secrets and variables → Actions**:
 # Install dependencies
 npm install
 
-# Add your API key to a local .env file
-echo "LUCID_API_KEY=your-api-key" > .env
+# Copy and fill in your API keys
+cp .env.example .env
+# Set LUCID_API_KEY (required) and ANTHROPIC_API_KEY (required for --enrich)
 
 # Show CLI help
 npm run generate -- --help
@@ -90,6 +112,10 @@ npm run generate -- <doc-id> --out-dir /path/to/output
 
 # Custom output directory (direct node command)
 node scripts/gen_data_dictionary.js <doc-id> --out-dir /path/to/output
+
+# Enrich with Claude-generated descriptions and categories
+npm run generate -- <doc-id> --enrich
+node scripts/gen_data_dictionary.js --all --enrich
 ```
 
 ## docs.json
