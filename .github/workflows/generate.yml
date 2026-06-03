@@ -7,6 +7,11 @@ on:
         description: 'Lucid document UUID, or "all" to process every doc in docs.json'
         required: true
         default: 'all'
+      enrich:
+        description: 'Use Claude API to generate descriptions and categories (requires ANTHROPIC_API_KEY secret)'
+        required: false
+        type: boolean
+        default: false
 
 jobs:
   generate:
@@ -27,11 +32,16 @@ jobs:
       - name: Generate dictionary
         env:
           LUCID_API_KEY: ${{ secrets.LUCID_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
+          ENRICH_FLAG=""
+          if [ "${{ inputs.enrich }}" = "true" ]; then
+            ENRICH_FLAG="--enrich"
+          fi
           if [ "${{ inputs.doc-id }}" = "all" ]; then
-            node scripts/gen_data_dictionary.js --all --out-dir docs
+            node scripts/gen_data_dictionary.js --all --out-dir docs $ENRICH_FLAG
           else
-            node scripts/gen_data_dictionary.js "${{ inputs.doc-id }}" --out-dir docs
+            node scripts/gen_data_dictionary.js "${{ inputs.doc-id }}" --out-dir docs $ENRICH_FLAG
           fi
 
       - name: Upload as artifact
