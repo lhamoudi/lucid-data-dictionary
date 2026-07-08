@@ -17,6 +17,11 @@ on:
         required: false
         type: string
         default: '4'
+      exclude-baseline:
+        description: 'Doc ID whose attributes should be excluded from other docs (in addition to any docs.json "baseline": true entries)'
+        required: false
+        type: string
+        default: ''
 
 jobs:
   generate:
@@ -43,10 +48,14 @@ jobs:
           if [ "${{ inputs.enrich }}" = "true" ]; then
             ENRICH_FLAG="--enrich"
           fi
+          BASELINE_FLAG=""
+          if [ -n "${{ inputs.exclude-baseline }}" ]; then
+            BASELINE_FLAG="--exclude-baseline ${{ inputs.exclude-baseline }}"
+          fi
           if [ "${{ inputs.doc-id }}" = "all" ]; then
-            node scripts/gen_data_dictionary.js --all --out-dir docs --concurrency "${{ inputs.concurrency }}" $ENRICH_FLAG
+            node scripts/gen_data_dictionary.js --all --out-dir docs --concurrency "${{ inputs.concurrency }}" $ENRICH_FLAG $BASELINE_FLAG
           else
-            node scripts/gen_data_dictionary.js "${{ inputs.doc-id }}" --out-dir docs $ENRICH_FLAG
+            node scripts/gen_data_dictionary.js "${{ inputs.doc-id }}" --out-dir docs $ENRICH_FLAG $BASELINE_FLAG
           fi
 
       - name: Upload as artifact
