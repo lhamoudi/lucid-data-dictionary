@@ -145,13 +145,17 @@ function isSetBlock(shapeClass, text) {
 }
 
 const SET_RE = /\$([A-Za-z_][A-Za-z0-9_.]*)\s*(?<!=)=(?!=)/g;
+const BARE_SET_RE = /\bset\s+([A-Za-z_][A-Za-z0-9_.]*)\s*(?<!=)=(?!=)/gi;
 
 function extractSets(text) {
   const results = [];
 
   for (const line of text.split("\n")) {
-    const matches = line.matchAll(SET_RE);
-    for (const match of matches) {
+    for (const match of line.matchAll(SET_RE)) {
+      results.push({ attr: match[1], line: line.trim() });
+    }
+
+    for (const match of line.matchAll(BARE_SET_RE)) {
       results.push({ attr: match[1], line: line.trim() });
     }
   }
