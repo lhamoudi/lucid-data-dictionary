@@ -12,6 +12,11 @@ on:
         required: false
         type: boolean
         default: false
+      concurrency:
+        description: 'With doc-id "all", number of documents to process at once'
+        required: false
+        type: string
+        default: '4'
 
 jobs:
   generate:
@@ -39,7 +44,7 @@ jobs:
             ENRICH_FLAG="--enrich"
           fi
           if [ "${{ inputs.doc-id }}" = "all" ]; then
-            node scripts/gen_data_dictionary.js --all --out-dir docs $ENRICH_FLAG
+            node scripts/gen_data_dictionary.js --all --out-dir docs --concurrency "${{ inputs.concurrency }}" $ENRICH_FLAG
           else
             node scripts/gen_data_dictionary.js "${{ inputs.doc-id }}" --out-dir docs $ENRICH_FLAG
           fi

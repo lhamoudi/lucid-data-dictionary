@@ -9,10 +9,33 @@ const Anthropic = require("@anthropic-ai/sdk");
 const LUCID_API_BASE = "https://api.lucid.co";
 const ENRICH_BATCH_SIZE = 20;
 const ENRICH_MODEL = "claude-haiku-4-5-20251001";
+const RETRYABLE_STATUSES = new Set([429, 502, 503, 504]);
+const MAX_FETCH_ATTEMPTS = 3;
+const RETRY_BASE_DELAY_MS = 2000;
 
 function fail(message) {
   console.error(`ERROR: ${message}`);
   process.exit(1);
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function mapWithConcurrency(items, limit, worker) {
+  const results = new Array(items.length);
+  let next = 0;
+
+  async function run() {
+    while (next < items.length) {
+      const current = next;
+      next += 1;
+      results[current] = await worker(items[current], current);
+    }
+  }
+
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, run));
+  return results;
 }
 
 function printHelp() {
@@ -24,45 +47,65 @@ Usage:
   node scripts/gen_data_dictionary.js <doc-id> --file /path/to/document.json
   node scripts/gen_data_dictionary.js <doc-id> --out-dir /path/to/output
   node scripts/gen_data_dictionary.js <doc-id> --enrich
+  node scripts/gen_data_dictionary.js --all --concurrency 8
+  node scripts/gen_data_dictionary.js <doc-id> --subfolder "Pod 1 - Boutique Wave 1"
 
 Flags:
-  --enrich    Use Claude API to generate plain-English descriptions and categories
-              for each attribute. Requires ANTHROPIC_API_KEY.
+  --enrich                Use Claude API to generate plain-English descriptions and categories
+                          for each attribute. Requires ANTHROPIC_API_KEY.
+  --concurrency N         With --all, process up to N documents at once (default 4).
+  --exclude-baseline ID   Exclude attributes already defined in the given doc ID. Repeatable.
+                          Docs marked "baseline": true in docs.json are excluded automatically.
+  --no-baseline-exclude   Disable the automatic docs.json "baseline": true exclusion.
+  --subfolder NAME        Write this doc's outputs into <out-dir>/NAME/ instead of <out-dir>/.
+                          With --all, set per-document via a "folder" field in docs.json.
 `);
 }
 
-async function fetchDocument(docId, apiKey) {
+async function fetchDocument(docId, apiKey, log = console.error) {
   const url = `${LUCID_API_BASE}/documents/${docId}/contents`;
-  const response = await fetch(url, {
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Lucid-Api-Version": "1",
-    },
-  });
 
-  if (!response.ok) {
+  for (let attempt = 1; attempt <= MAX_FETCH_ATTEMPTS; attempt += 1) {
+    const response = await fetch(url, {
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Lucid-Api-Version": "1",
+      },
+    });
+
+    if (response.ok) {
+      return response.json();
+    }
+
     const body = await response.text();
-    fail(`Lucid API returned ${response.status} for doc '${docId}': ${body}`);
-  }
 
-  return response.json();
+    if (!RETRYABLE_STATUSES.has(response.status) || attempt === MAX_FETCH_ATTEMPTS) {
+      throw new Error(`Lucid API returned ${response.status} for doc '${docId}': ${body}`);
+    }
+
+    const delay = RETRY_BASE_DELAY_MS * attempt;
+    log(
+      `  Lucid API returned ${response.status} for doc '${docId}' (attempt ${attempt}/${MAX_FETCH_ATTEMPTS}), retrying in ${delay}ms...`
+    );
+    await sleep(delay);
+  }
 }
 
-async function loadDoc(docId, filePath, apiKey) {
+async function loadDoc(docId, filePath, apiKey, log = console.error) {
   let data;
 
   if (filePath) {
     if (!fs.existsSync(filePath)) {
       fail(`File not found: ${filePath}`);
     }
-    console.error(`  Loading from file: ${filePath}`);
+    log(`  Loading from file: ${filePath}`);
     data = JSON.parse(fs.readFileSync(filePath, "utf8"));
   } else {
     if (!apiKey) {
       fail("LUCID_API_KEY environment variable is not set");
     }
-    console.error(`  Fetching from Lucid API: ${docId}`);
-    data = await fetchDocument(docId, apiKey);
+    log(`  Fetching from Lucid API: ${docId}`);
+    data = await fetchDocument(docId, apiKey, log);
   }
 
   for (const page of data.pages || []) {
@@ -137,6 +180,61 @@ function extractAttributes(doc) {
   }
 
   return attrMap;
+}
+
+function resolveBaselineIds(args) {
+  const ids = new Set(args.excludeBaseline);
+
+  if (!args.noBaselineExclude) {
+    const docsPath = path.resolve(process.cwd(), "docs.json");
+    if (fs.existsSync(docsPath)) {
+      const docs = JSON.parse(fs.readFileSync(docsPath, "utf8"));
+      for (const entry of docs) {
+        if (entry.baseline) {
+          ids.add(entry.id);
+        }
+      }
+    }
+  }
+
+  return ids;
+}
+
+async function loadBaselineAttributeKeys(baselineIds, lucidKey) {
+  const keys = new Set();
+
+  for (const id of baselineIds) {
+    console.error(`Loading baseline document for attribute exclusion: ${id}`);
+    const doc = await loadDoc(id, null, lucidKey);
+    for (const attr of Object.keys(extractAttributes(doc))) {
+      keys.add(attr);
+    }
+  }
+
+  return keys;
+}
+
+function filterBaselineAttributes(attrMap, docId, baselineIds, baselineKeys, log = console.error) {
+  if (!baselineKeys || baselineKeys.size === 0 || baselineIds.has(docId)) {
+    return attrMap;
+  }
+
+  const filtered = {};
+  let excluded = 0;
+
+  for (const [attr, entries] of Object.entries(attrMap)) {
+    if (baselineKeys.has(attr)) {
+      excluded += 1;
+      continue;
+    }
+    filtered[attr] = entries;
+  }
+
+  if (excluded > 0) {
+    log(`  Excluded ${excluded} attribute(s) already defined in baseline document(s)`);
+  }
+
+  return filtered;
 }
 
 function uniquePages(entries) {
@@ -215,7 +313,7 @@ async function enrichBatch(client, attrs, attrMap) {
   return JSON.parse(json);
 }
 
-async function enrichAttributes(attrMap, anthropicKey) {
+async function enrichAttributes(attrMap, anthropicKey, log = console.error) {
   if (!anthropicKey) {
     fail("ANTHROPIC_API_KEY environment variable is not set (required for --enrich)");
   }
@@ -226,7 +324,7 @@ async function enrichAttributes(attrMap, anthropicKey) {
 
   for (let i = 0; i < attrs.length; i += ENRICH_BATCH_SIZE) {
     const batch = attrs.slice(i, i + ENRICH_BATCH_SIZE);
-    console.error(`  Enriching attributes ${i + 1}–${Math.min(i + ENRICH_BATCH_SIZE, attrs.length)} of ${attrs.length}...`);
+    log(`  Enriching attributes ${i + 1}–${Math.min(i + ENRICH_BATCH_SIZE, attrs.length)} of ${attrs.length}...`);
     const results = await enrichBatch(client, batch, attrMap);
     for (const result of results) {
       const key = result.attr.replace(/^\$/, "");
@@ -371,18 +469,19 @@ function safeFilename(title) {
   return title.replace(/[^\w-]/g, "-").replace(/-+/g, "-").replace(/^-+|-+$/g, "");
 }
 
-function writeOutputs(doc, attrMap, outDir, enrichment) {
-  fs.mkdirSync(outDir, { recursive: true });
+function writeOutputs(doc, attrMap, outDir, enrichment, subfolder = null, log = console.error) {
+  const targetDir = subfolder ? path.join(outDir, safeFilename(subfolder)) : outDir;
+  fs.mkdirSync(targetDir, { recursive: true });
   const baseName = `${safeFilename(doc.title || "document")}-data-dictionary`;
-  const mdPath = path.join(outDir, `${baseName}.md`);
-  const csvPath = path.join(outDir, `${baseName}.csv`);
+  const mdPath = path.join(targetDir, `${baseName}.md`);
+  const csvPath = path.join(targetDir, `${baseName}.csv`);
 
   fs.writeFileSync(mdPath, renderMarkdown(doc, attrMap, enrichment));
   fs.writeFileSync(csvPath, renderCsv(doc, attrMap, enrichment));
 
-  console.error(`  Written: ${mdPath}`);
-  console.error(`  Written: ${csvPath}`);
-  console.error(`  Attributes: ${Object.keys(attrMap).length}`);
+  log(`  Written: ${mdPath}`);
+  log(`  Written: ${csvPath}`);
+  log(`  Attributes: ${Object.keys(attrMap).length}`);
 }
 
 function parseArgs(argv) {
@@ -392,6 +491,10 @@ function parseArgs(argv) {
     docId: null,
     file: null,
     outDir: "docs",
+    subfolder: null,
+    concurrency: 4,
+    excludeBaseline: [],
+    noBaselineExclude: false,
   };
 
   for (let i = 0; i < argv.length; i += 1) {
@@ -432,6 +535,42 @@ function parseArgs(argv) {
       continue;
     }
 
+    if (current === "--subfolder") {
+      const value = argv[i + 1];
+      if (!value || value.startsWith("--")) {
+        fail("Missing value for --subfolder");
+      }
+      args.subfolder = value;
+      i += 1;
+      continue;
+    }
+
+    if (current === "--concurrency") {
+      const value = argv[i + 1];
+      const parsed = Number.parseInt(value, 10);
+      if (!value || value.startsWith("--") || !Number.isInteger(parsed) || parsed < 1) {
+        fail("--concurrency requires a positive integer");
+      }
+      args.concurrency = parsed;
+      i += 1;
+      continue;
+    }
+
+    if (current === "--exclude-baseline") {
+      const value = argv[i + 1];
+      if (!value || value.startsWith("--")) {
+        fail("Missing value for --exclude-baseline");
+      }
+      args.excludeBaseline.push(value);
+      i += 1;
+      continue;
+    }
+
+    if (current === "--no-baseline-exclude") {
+      args.noBaselineExclude = true;
+      continue;
+    }
+
     if (current.startsWith("--")) {
       fail(`Unknown option: ${current}`);
     }
@@ -458,6 +597,9 @@ async function main() {
   const lucidKey = process.env.LUCID_API_KEY;
   const anthropicKey = process.env.ANTHROPIC_API_KEY;
 
+  const baselineIds = resolveBaselineIds(args);
+  const baselineKeys = baselineIds.size > 0 ? await loadBaselineAttributeKeys(baselineIds, lucidKey) : null;
+
   if (args.all) {
     const docsPath = path.resolve(process.cwd(), "docs.json");
     if (!fs.existsSync(docsPath)) {
@@ -465,13 +607,31 @@ async function main() {
     }
 
     const docs = JSON.parse(fs.readFileSync(docsPath, "utf8"));
-    for (const entry of docs) {
+    const failures = [];
+
+    await mapWithConcurrency(docs, args.concurrency, async (entry) => {
       const docId = entry.id;
-      console.error(`\n[${entry.title || docId}]`);
-      const doc = await loadDoc(docId, null, lucidKey);
-      const attrMap = extractAttributes(doc);
-      const enrichment = args.enrich ? await enrichAttributes(attrMap, anthropicKey) : null;
-      writeOutputs(doc, attrMap, args.outDir, enrichment);
+      const label = entry.title || docId;
+      const log = (message) => console.error(`[${label}] ${message}`);
+
+      try {
+        const doc = await loadDoc(docId, null, lucidKey, log);
+        const attrMap = filterBaselineAttributes(extractAttributes(doc), docId, baselineIds, baselineKeys, log);
+        const enrichment = args.enrich ? await enrichAttributes(attrMap, anthropicKey, log) : null;
+        writeOutputs(doc, attrMap, args.outDir, enrichment, entry.folder || null, log);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        log(`FAILED: ${message}`);
+        failures.push({ label, message });
+      }
+    });
+
+    if (failures.length > 0) {
+      console.error(`\n${failures.length} of ${docs.length} document(s) failed:`);
+      for (const failure of failures) {
+        console.error(`  - ${failure.label}: ${failure.message}`);
+      }
+      process.exitCode = 1;
     }
     return;
   }
@@ -481,9 +641,9 @@ async function main() {
   }
 
   const doc = await loadDoc(args.docId, args.file, lucidKey);
-  const attrMap = extractAttributes(doc);
+  const attrMap = filterBaselineAttributes(extractAttributes(doc), args.docId, baselineIds, baselineKeys);
   const enrichment = args.enrich ? await enrichAttributes(attrMap, anthropicKey) : null;
-  writeOutputs(doc, attrMap, args.outDir, enrichment);
+  writeOutputs(doc, attrMap, args.outDir, enrichment, args.subfolder);
 }
 
 main().catch((error) => {

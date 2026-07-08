@@ -1,3 +1,4 @@
 [
-  { "id": "<lucid-doc-uuid>", "title": "Document Name" }
+  { "id": "<lucid-doc-uuid>", "title": "Document Name", "folder": "Main Lucid Folder Name" },
+  { "id": "<template-lucid-doc-uuid>", "title": "Template Framework", "baseline": true, "folder": "Blueprint/Template" }
 ]

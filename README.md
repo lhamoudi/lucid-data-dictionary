@@ -116,6 +116,15 @@ node scripts/gen_data_dictionary.js <doc-id> --out-dir /path/to/output
 # Enrich with Claude-generated descriptions and categories
 npm run generate -- <doc-id> --enrich
 node scripts/gen_data_dictionary.js --all --enrich
+
+# Process up to N documents concurrently with --all (default 4)
+node scripts/gen_data_dictionary.js --all --concurrency 8
+
+# Exclude attributes already defined in another doc (e.g. a shared template)
+node scripts/gen_data_dictionary.js <doc-id> --exclude-baseline <template-doc-id>
+
+# Write outputs into a subfolder of --out-dir
+node scripts/gen_data_dictionary.js <doc-id> --subfolder "Pod 1 - Boutique Wave 1"
 ```
 
 ## docs.json
@@ -127,3 +136,31 @@ cp docs.json.example docs.json
 ```
 
 The `--all` flag reads this file from the current working directory.
+
+### Baseline exclusion
+
+BU-specific Lucid docs sometimes include copies of a shared template's pages, which duplicates
+that template's attributes across every BU dictionary. Mark the template doc with `"baseline":
+true` in `docs.json` and its attributes are automatically excluded from every other document's
+dictionary (in both single-doc and `--all` runs):
+
+```json
+{ "id": "<template-doc-uuid>", "title": "Template Framework", "baseline": true }
+```
+
+For a one-off exclusion without editing `docs.json`, pass `--exclude-baseline <doc-id>`
+(repeatable). Use `--no-baseline-exclude` to disable the automatic `docs.json` behavior.
+
+### Output subfolders
+
+Set a `"folder"` field on a `docs.json` entry to write that document's outputs into
+`<out-dir>/<folder>/` instead of directly into `<out-dir>/`. This is meant to mirror the Lucid
+folder a document lives in — specifically the main folder directly under your Lucid "Designs"
+folder, not any subfolder beneath it:
+
+```json
+{ "id": "<lucid-doc-uuid>", "title": "Document Name", "folder": "Pod 1 - Boutique Wave 1" }
+```
+
+Entries without a `"folder"` field are written directly into `<out-dir>/`, same as before. For a
+single-doc run, pass `--subfolder <name>` instead of editing `docs.json`.

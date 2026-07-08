@@ -3,3 +3,4 @@ node_modules/
 docs.json
 docs/
 .vscode/
+.DS_Store
