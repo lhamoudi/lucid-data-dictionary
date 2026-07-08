@@ -151,6 +151,11 @@ dictionary (in both single-doc and `--all` runs):
 For a one-off exclusion without editing `docs.json`, pass `--exclude-baseline <doc-id>`
 (repeatable). Use `--no-baseline-exclude` to disable the automatic `docs.json` behavior.
 
+Baseline exclusion matches attribute names exactly, so a BU doc's `$QueueID` won't be excluded
+against the baseline's `$queueID` — they're kept as distinct attributes rather than silently
+merged, since case drift can also indicate genuinely different attributes. A `--all` run instead
+writes any such case-only matches to `<out-dir>/case-mismatches.md` for manual review.
+
 ### Output subfolders
 
 Set a `"folder"` field on a `docs.json` entry to write that document's outputs into

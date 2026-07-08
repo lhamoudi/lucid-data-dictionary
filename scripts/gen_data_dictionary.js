@@ -206,20 +206,24 @@ function resolveBaselineIds(args) {
 
 async function loadBaselineAttributeKeys(baselineIds, lucidKey) {
   const keys = new Set();
+  const byLowerCase = new Map();
 
   for (const id of baselineIds) {
     console.error(`Loading baseline document for attribute exclusion: ${id}`);
     const doc = await loadDoc(id, null, lucidKey);
     for (const attr of Object.keys(extractAttributes(doc))) {
       keys.add(attr);
+      if (!byLowerCase.has(attr.toLowerCase())) {
+        byLowerCase.set(attr.toLowerCase(), attr);
+      }
     }
   }
 
-  return keys;
+  return { keys, byLowerCase };
 }
 
-function filterBaselineAttributes(attrMap, docId, baselineIds, baselineKeys, log = console.error) {
-  if (!baselineKeys || baselineKeys.size === 0 || baselineIds.has(docId)) {
+function filterBaselineAttributes(attrMap, docId, baselineIds, baseline, log = console.error, caseMismatches = null, label = docId) {
+  if (!baseline || baseline.keys.size === 0 || baselineIds.has(docId)) {
     return attrMap;
   }
 
@@ -227,10 +231,16 @@ function filterBaselineAttributes(attrMap, docId, baselineIds, baselineKeys, log
   let excluded = 0;
 
   for (const [attr, entries] of Object.entries(attrMap)) {
-    if (baselineKeys.has(attr)) {
+    if (baseline.keys.has(attr)) {
       excluded += 1;
       continue;
     }
+
+    const baselineAttr = baseline.byLowerCase.get(attr.toLowerCase());
+    if (baselineAttr && caseMismatches) {
+      caseMismatches.push({ doc: label, attr, baselineAttr });
+    }
+
     filtered[attr] = entries;
   }
 
@@ -239,6 +249,26 @@ function filterBaselineAttributes(attrMap, docId, baselineIds, baselineKeys, log
   }
 
   return filtered;
+}
+
+function renderCaseMismatchReport(caseMismatches) {
+  const sorted = [...caseMismatches].sort(
+    (a, b) => a.doc.localeCompare(b.doc) || a.attr.localeCompare(b.attr)
+  );
+  const rows = sorted.map((m) => `| ${m.doc} | \`$${m.attr}\` | \`$${m.baselineAttr}\` |`);
+
+  return `# Case-only attribute mismatches
+
+These attributes appear in a BU-specific document under one casing and in the baseline document
+under a different casing. Baseline exclusion is case-sensitive, so these were kept as distinct
+attributes rather than excluded as duplicates. Review each: is this the same attribute with a
+naming-drift typo that should be corrected in the source diagram, or a genuinely distinct
+attribute that happens to share a name?
+
+| Document | Attribute (as used) | Baseline attribute |
+|---|---|---|
+${rows.join("\n")}
+`;
 }
 
 function uniquePages(entries) {
@@ -602,7 +632,7 @@ async function main() {
   const anthropicKey = process.env.ANTHROPIC_API_KEY;
 
   const baselineIds = resolveBaselineIds(args);
-  const baselineKeys = baselineIds.size > 0 ? await loadBaselineAttributeKeys(baselineIds, lucidKey) : null;
+  const baseline = baselineIds.size > 0 ? await loadBaselineAttributeKeys(baselineIds, lucidKey) : null;
 
   if (args.all) {
     const docsPath = path.resolve(process.cwd(), "docs.json");
@@ -612,6 +642,7 @@ async function main() {
 
     const docs = JSON.parse(fs.readFileSync(docsPath, "utf8"));
     const failures = [];
+    const caseMismatches = [];
 
     await mapWithConcurrency(docs, args.concurrency, async (entry) => {
       const docId = entry.id;
@@ -620,7 +651,7 @@ async function main() {
 
       try {
         const doc = await loadDoc(docId, null, lucidKey, log);
-        const attrMap = filterBaselineAttributes(extractAttributes(doc), docId, baselineIds, baselineKeys, log);
+        const attrMap = filterBaselineAttributes(extractAttributes(doc), docId, baselineIds, baseline, log, caseMismatches, label);
         const enrichment = args.enrich ? await enrichAttributes(attrMap, anthropicKey, log) : null;
         writeOutputs(doc, attrMap, args.outDir, enrichment, entry.folder || null, log);
       } catch (error) {
@@ -637,6 +668,15 @@ async function main() {
       }
       process.exitCode = 1;
     }
+
+    if (caseMismatches.length > 0) {
+      fs.mkdirSync(args.outDir, { recursive: true });
+      const reportPath = path.join(args.outDir, "case-mismatches.md");
+      fs.writeFileSync(reportPath, renderCaseMismatchReport(caseMismatches));
+      console.error(
+        `\n${caseMismatches.length} attribute(s) found in both a baseline and BU document with different casing — see ${reportPath}`
+      );
+    }
     return;
   }
 
@@ -644,10 +684,18 @@ async function main() {
     fail("doc_id is required unless --all is specified");
   }
 
+  const caseMismatches = [];
   const doc = await loadDoc(args.docId, args.file, lucidKey);
-  const attrMap = filterBaselineAttributes(extractAttributes(doc), args.docId, baselineIds, baselineKeys);
+  const attrMap = filterBaselineAttributes(extractAttributes(doc), args.docId, baselineIds, baseline, console.error, caseMismatches);
   const enrichment = args.enrich ? await enrichAttributes(attrMap, anthropicKey) : null;
   writeOutputs(doc, attrMap, args.outDir, enrichment, args.subfolder);
+
+  if (caseMismatches.length > 0) {
+    console.error(`  ${caseMismatches.length} attribute(s) match the baseline with different casing:`);
+    for (const m of caseMismatches) {
+      console.error(`    $${m.attr} <-> $${m.baselineAttr} (baseline)`);
+    }
+  }
 }
 
 main().catch((error) => {
