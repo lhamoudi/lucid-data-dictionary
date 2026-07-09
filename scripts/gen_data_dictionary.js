@@ -5,6 +5,7 @@ require("dotenv").config();
 const fs = require("node:fs");
 const path = require("node:path");
 const Anthropic = require("@anthropic-ai/sdk");
+const ExcelJS = require("exceljs");
 
 const LUCID_API_BASE = "https://api.lucid.co";
 const ENRICH_BATCH_SIZE = 20;
@@ -146,6 +147,12 @@ function isSetBlock(shapeClass, text) {
 
 const SET_RE = /\$([A-Za-z_][A-Za-z0-9_.]*)\s*(?<!=)=(?!=)/g;
 const BARE_SET_RE = /\bset\s+([A-Za-z_][A-Za-z0-9_.]*)\s*(?<!=)=(?!=)/gi;
+const COLON_SET_RE = /\$(\.?[A-Za-z_][A-Za-z0-9_.]*)\s*:(?!=)/g;
+
+function lastPathSegment(dottedName) {
+  const segments = dottedName.split(".").filter(Boolean);
+  return segments[segments.length - 1];
+}
 
 function extractSets(text) {
   const results = [];
@@ -157,6 +164,10 @@ function extractSets(text) {
 
     for (const match of line.matchAll(BARE_SET_RE)) {
       results.push({ attr: match[1], line: line.trim() });
+    }
+
+    for (const match of line.matchAll(COLON_SET_RE)) {
+      results.push({ attr: lastPathSegment(match[1]), line: line.trim() });
     }
   }
 
@@ -457,7 +468,7 @@ function csvEscape(value) {
   return stringValue;
 }
 
-function renderCsv(doc, attrMap, enrichment) {
+function buildTable(doc, attrMap, enrichment) {
   const attrs = Object.keys(attrMap).sort((a, b) => a.localeCompare(b));
   const docTitle = doc.title || "";
 
@@ -465,7 +476,7 @@ function renderCsv(doc, attrMap, enrichment) {
   let rowFn;
 
   if (enrichment) {
-    header = ["attribute", "document", "category", "description", "note", "pages"].join(",");
+    header = ["attribute", "document", "category", "description", "note", "pages"];
     rowFn = (attr) => {
       const info = enrichment[attr] || {};
       return [
@@ -475,12 +486,10 @@ function renderCsv(doc, attrMap, enrichment) {
         info.description || "",
         info.note || "",
         uniquePages(attrMap[attr]).join(" | "),
-      ]
-        .map(csvEscape)
-        .join(",");
+      ];
     };
   } else {
-    header = ["attribute", "document", "pages", "sample_assignment_1", "sample_assignment_2", "sample_assignment_3"].join(",");
+    header = ["attribute", "document", "pages", "sample_assignment_1", "sample_assignment_2", "sample_assignment_3"];
     rowFn = (attr) => {
       const samples = sampleLines(attrMap[attr], 3);
       return [
@@ -490,31 +499,55 @@ function renderCsv(doc, attrMap, enrichment) {
         samples[0] || "",
         samples[1] || "",
         samples[2] || "",
-      ]
-        .map(csvEscape)
-        .join(",");
+      ];
     };
   }
 
-  return `${[header, ...attrs.map(rowFn)].join("\n")}\n`;
+  return { header, rows: attrs.map(rowFn) };
+}
+
+function renderCsv(doc, attrMap, enrichment) {
+  const { header, rows } = buildTable(doc, attrMap, enrichment);
+  const lines = [header, ...rows].map((row) => row.map(csvEscape).join(","));
+  return `${lines.join("\n")}\n`;
+}
+
+async function writeXlsx(filePath, doc, attrMap, enrichment) {
+  const { header, rows } = buildTable(doc, attrMap, enrichment);
+
+  const workbook = new ExcelJS.Workbook();
+  const sheet = workbook.addWorksheet("Data Dictionary");
+  sheet.addRow(header).font = { bold: true };
+  for (const row of rows) {
+    sheet.addRow(row);
+  }
+  sheet.columns.forEach((column) => {
+    column.width = 30;
+  });
+  sheet.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: header.length } };
+
+  await workbook.xlsx.writeFile(filePath);
 }
 
 function safeFilename(title) {
   return title.replace(/[^\w-]/g, "-").replace(/-+/g, "-").replace(/^-+|-+$/g, "");
 }
 
-function writeOutputs(doc, attrMap, outDir, enrichment, subfolder = null, log = console.error) {
+async function writeOutputs(doc, attrMap, outDir, enrichment, subfolder = null, log = console.error) {
   const targetDir = subfolder ? path.join(outDir, safeFilename(subfolder)) : outDir;
   fs.mkdirSync(targetDir, { recursive: true });
   const baseName = `${safeFilename(doc.title || "document")}-data-dictionary`;
   const mdPath = path.join(targetDir, `${baseName}.md`);
   const csvPath = path.join(targetDir, `${baseName}.csv`);
+  const xlsxPath = path.join(targetDir, `${baseName}.xlsx`);
 
   fs.writeFileSync(mdPath, renderMarkdown(doc, attrMap, enrichment));
   fs.writeFileSync(csvPath, renderCsv(doc, attrMap, enrichment));
+  await writeXlsx(xlsxPath, doc, attrMap, enrichment);
 
   log(`  Written: ${mdPath}`);
   log(`  Written: ${csvPath}`);
+  log(`  Written: ${xlsxPath}`);
   log(`  Attributes: ${Object.keys(attrMap).length}`);
 }
 
@@ -653,7 +686,7 @@ async function main() {
         const doc = await loadDoc(docId, null, lucidKey, log);
         const attrMap = filterBaselineAttributes(extractAttributes(doc), docId, baselineIds, baseline, log, caseMismatches, label);
         const enrichment = args.enrich ? await enrichAttributes(attrMap, anthropicKey, log) : null;
-        writeOutputs(doc, attrMap, args.outDir, enrichment, entry.folder || null, log);
+        await writeOutputs(doc, attrMap, args.outDir, enrichment, entry.folder || null, log);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         log(`FAILED: ${message}`);
@@ -688,7 +721,7 @@ async function main() {
   const doc = await loadDoc(args.docId, args.file, lucidKey);
   const attrMap = filterBaselineAttributes(extractAttributes(doc), args.docId, baselineIds, baseline, console.error, caseMismatches);
   const enrichment = args.enrich ? await enrichAttributes(attrMap, anthropicKey) : null;
-  writeOutputs(doc, attrMap, args.outDir, enrichment, args.subfolder);
+  await writeOutputs(doc, attrMap, args.outDir, enrichment, args.subfolder);
 
   if (caseMismatches.length > 0) {
     console.error(`  ${caseMismatches.length} attribute(s) match the baseline with different casing:`);

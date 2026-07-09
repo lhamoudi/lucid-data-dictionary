@@ -2,7 +2,7 @@
 
 > **This is a template repository.** To use it, create a new private repo from this template (or fork/clone it), add your own `docs.json` (copy from `docs.json.example`), and configure the `LUCID_API_KEY` secret.
 
-Generates a contact-attribute data dictionary from Lucidchart IVR flow diagrams. For each tracked document, it produces a Markdown table and a CSV listing every contact attribute being set across all pages. Optionally enriches each attribute with a plain-English description and category (business / module-io / transient) using the Claude API.
+Generates a contact-attribute data dictionary from Lucidchart IVR flow diagrams. For each tracked document, it produces a Markdown table, a CSV, and an Excel (.xlsx) file listing every contact attribute being set across all pages. Optionally enriches each attribute with a plain-English description and category (business / module-io / transient) using the Claude API.
 
 ## How it works
 
